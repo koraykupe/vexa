@@ -137,3 +137,32 @@ async def test_anonymous_spawns_do_not_serialize(monkeypatch):
     await _spawn(repo, runtime, native_id="aaa-aaaa-aaa")
     await _spawn(repo, runtime, native_id="bbb-bbbb-bbb")
     assert len(runtime.specs) == 2
+
+
+# ── Nedwerk fork: BOT_AUTH_BUSY_FALLBACK=anonymous ───────────────────────────────────────────────
+
+async def test_busy_session_falls_back_to_anonymous_when_enabled(monkeypatch):
+    """With the fallback on, the second concurrent meeting gets a guest bot: no auth block, no
+    userdata path on its row, so it never serializes against (or touches) the stored session."""
+    _set_auth_env(monkeypatch, BOT_AUTH_BUSY_FALLBACK="anonymous")
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    first = await _spawn(repo, runtime, native_id="aaa-aaaa-aaa")
+    second = await _spawn(repo, runtime, native_id="bbb-bbbb-bbb")
+    assert second["id"] != first["id"]
+    assert len(runtime.specs) == 2
+    signed_in = json.loads(runtime.specs[0]["env"]["VEXA_BOT_CONFIG"])
+    guest = json.loads(runtime.specs[1]["env"]["VEXA_BOT_CONFIG"])
+    assert signed_in["authenticated"] is True
+    assert not any(f in guest for f in AUTH_FIELDS)
+    assert "auth_userdata_path" not in (repo._meetings[second["id"]].get("data") or {})
+    # A third meeting while the first is still on: guest again, not a refusal.
+    await _spawn(repo, runtime, native_id="ccc-cccc-ccc")
+    assert len(runtime.specs) == 3
+
+
+async def test_busy_session_still_refuses_without_fallback(monkeypatch):
+    _set_auth_env(monkeypatch, BOT_AUTH_BUSY_FALLBACK=None)
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    await _spawn(repo, runtime, native_id="aaa-aaaa-aaa")
+    with pytest.raises(AuthSessionBusy):
+        await _spawn(repo, runtime, native_id="bbb-bbbb-bbb")
