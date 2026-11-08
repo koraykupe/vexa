@@ -603,12 +603,26 @@ async def request_bot(
     if authenticated and auth_userdata_path:
         conflict = await repo.find_active_by_userdata(auth_userdata_path)
         if conflict is not None and (reused_row is None or conflict["id"] != reused_row["id"]):
-            log_event(
-                "bot_spawn_auth_session_busy", audience="user", level="warning",
-                span="bots.create", user_id=user_id,
-                fields={"conflicting_meeting_id": conflict["id"]},
-            )
-            raise AuthSessionBusy(conflict["id"], auth_userdata_path)
+            # Nedwerk fork: BOT_AUTH_BUSY_FALLBACK=anonymous sends a guest (not signed-in) bot to
+            # the second meeting instead of refusing it. The stored session stays one-writer: the
+            # guest bot carries no userdata, so nothing reads or writes the cookie jar twice. It
+            # waits in the lobby like any anonymous bot.
+            if os.getenv("BOT_AUTH_BUSY_FALLBACK", "").strip().lower() == "anonymous":
+                log_event(
+                    "bot_spawn_auth_session_busy_fallback", audience="user", level="warning",
+                    span="bots.create", user_id=user_id,
+                    fields={"conflicting_meeting_id": conflict["id"]},
+                )
+                authenticated = False
+                auth_userdata_path = None
+                auth_s3 = {}
+            else:
+                log_event(
+                    "bot_spawn_auth_session_busy", audience="user", level="warning",
+                    span="bots.create", user_id=user_id,
+                    fields={"conflicting_meeting_id": conflict["id"]},
+                )
+                raise AuthSessionBusy(conflict["id"], auth_userdata_path)
 
     # The service identity exists before any meeting row or workload. It is a
     # per-run identity (not the database row id): continued runs reuse a
