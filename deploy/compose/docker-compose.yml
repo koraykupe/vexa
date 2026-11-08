@@ -369,6 +369,8 @@ services:
       # BOT_S3_* are SCOPED userdata credentials — never the deployment's admin S3 creds.
       # Docs: /authenticated-bots.
       - BOT_AUTHENTICATED=${BOT_AUTHENTICATED:-false}
+      # Nedwerk fork: "anonymous" sends a guest bot when the signed-in session is busy.
+      - BOT_AUTH_BUSY_FALLBACK=${BOT_AUTH_BUSY_FALLBACK:-}
       - BOT_USERDATA_S3_PATH=${BOT_USERDATA_S3_PATH:-}
       - BOT_S3_ENDPOINT=${BOT_S3_ENDPOINT:-}
       - BOT_S3_BUCKET=${BOT_S3_BUCKET:-}
