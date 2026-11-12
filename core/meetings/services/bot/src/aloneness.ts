@@ -77,6 +77,12 @@ export interface AlonenessAdapter {
   evaluate(snapshot: RemoteAudioActivitySnapshot, now: number, windowMs: number): AlonenessVerdict;
 }
 
+/** Nedwerk fork: how many people OTHER than the bot the meeting page shows right now.
+ *  `undefined` = unknown (page not ready, read failed, or a platform that is not read). */
+export interface OccupancySource {
+  othersVisible(): number | undefined;
+}
+
 export interface TimerScheduler {
   setInterval(callback: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
@@ -231,6 +237,12 @@ export function createSilenceAlonenessSource(options: {
    *  the people do must not leave the waiting room it sits in; once someone has spoken, `windowMs`
    *  applies. Unset (or not longer than `windowMs`) = `windowMs` throughout, the upstream rule. */
   beforeFirstAudioWindowMs?: number;
+  /** Nedwerk fork: the empty-room rule. Once somebody other than the bot has been seen in the
+   *  meeting, a room that shows nobody else AND has been silent for `emptyRoomMs` is left at once,
+   *  instead of waiting out the silence window. A room nobody has entered yet never triggers it:
+   *  people may join minutes late. Unset = no empty-room rule. */
+  occupancy?: OccupancySource;
+  emptyRoomMs?: number;
   adapters?: readonly AlonenessAdapter[];
   now?: () => number;
   pollMs?: number;
@@ -259,6 +271,9 @@ export function createSilenceAlonenessSource(options: {
       let captureFaultSince: number | null = null;
       let captureFaultLoggedAt: number | null = null;
       let captureFaultRepairAttempted = false;
+      /** Empty-room rule state: has anyone else been seen, and since when is the room empty. */
+      let othersSeen = false;
+      let emptySince: number | null = null;
 
       const stop = (): void => {
         if (stopped) return;
@@ -269,6 +284,26 @@ export function createSilenceAlonenessSource(options: {
         if (stopped || fired || adapters.length === 0) return;
         const at = now();
         const snapshot = options.activity.snapshot();
+        if (options.occupancy && options.emptyRoomMs !== undefined && options.emptyRoomMs > 0) {
+          let others: number | undefined;
+          try { others = options.occupancy.othersVisible(); } catch { others = undefined; }
+          if (others !== undefined && others > 0) {
+            othersSeen = true;
+            emptySince = null;
+          } else if (others === 0 && othersSeen) {
+            if (emptySince === null) emptySince = at;
+            const quietFor = snapshot.lastRemoteAudioAt === undefined ? Infinity : at - snapshot.lastRemoteAudioAt;
+            if (at - emptySince >= options.emptyRoomMs && quietFor >= options.emptyRoomMs) {
+              fired = true;
+              stop();
+              log(`aloneness: empty-room verdict (nobody else for ${at - emptySince}ms, empty_room_ms=${options.emptyRoomMs})`);
+              callback();
+              return;
+            }
+          } else {
+            emptySince = null;
+          }
+        }
         const windowMs = snapshot.heardRemoteAudio === false
           && options.beforeFirstAudioWindowMs !== undefined
           && options.beforeFirstAudioWindowMs > options.windowMs

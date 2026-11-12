@@ -42,6 +42,8 @@ function fixture(windowMs = 1_000, extra: {
   adapters?: Parameters<typeof createSilenceAlonenessSource>[0]['adapters'];
   onCaptureFault?: () => void;
   beforeFirstAudioWindowMs?: number;
+  occupancy?: { othersVisible(): number | undefined };
+  emptyRoomMs?: number;
 } = {}) {
   const clock = new FakeClock();
   const scheduler = new FakeScheduler();
@@ -53,6 +55,8 @@ function fixture(windowMs = 1_000, extra: {
     adapters: extra.adapters,
     onCaptureFault: extra.onCaptureFault,
     beforeFirstAudioWindowMs: extra.beforeFirstAudioWindowMs,
+    occupancy: extra.occupancy,
+    emptyRoomMs: extra.emptyRoomMs,
     now: clock.now,
     pollMs: 10,
     setInterval: scheduler.setInterval,
@@ -465,6 +469,51 @@ function fixture(windowMs = 1_000, extra: {
   f.source.onAlone(() => fired++);
   f.clock.advance(1_000); f.scheduler.tick();
   check('without a before-first-audio window the upstream rule holds', fired === 1);
+}
+
+// Nedwerk fork: the empty-room rule.
+{
+  let others: number | undefined = 0;
+  const f = fixture(10_000, { beforeFirstAudioWindowMs: 60_000, occupancy: { othersVisible: () => others }, emptyRoomMs: 300 });
+  let fired = 0;
+  f.activity.ready();
+  f.source.onAlone(() => fired++);
+  f.clock.advance(5_000); f.scheduler.tick();
+  check('a room nobody has entered yet is not left by the empty-room rule', fired === 0);
+  others = 2;
+  f.scheduler.tick();
+  f.clock.advance(100);
+  f.activity.observeRemoteEnergy(loudEnergy);
+  others = 0;
+  f.scheduler.tick();
+  f.clock.advance(200); f.scheduler.tick();
+  check('an empty room is not left before the empty-room time', fired === 0);
+  f.clock.advance(100); f.scheduler.tick();
+  check('everybody gone and quiet for the empty-room time: the bot leaves', fired === 1);
+  check('the empty-room verdict is logged', f.logs.some((l) => l.includes('empty-room verdict')));
+}
+{
+  let others: number | undefined = 1;
+  const f = fixture(10_000, { occupancy: { othersVisible: () => others }, emptyRoomMs: 300 });
+  let fired = 0;
+  f.activity.ready();
+  f.source.onAlone(() => fired++);
+  f.scheduler.tick();
+  others = 0;
+  f.scheduler.tick();
+  f.clock.advance(250);
+  f.activity.observeRemoteEnergy(loudEnergy);
+  f.clock.advance(100); f.scheduler.tick();
+  check('a voice heard while no tile shows keeps the bot in', fired === 0);
+  others = undefined;
+  f.clock.advance(1_000); f.scheduler.tick();
+  check('an unknown head count never counts as empty', fired === 0);
+  others = 1;
+  f.scheduler.tick();
+  others = 0;
+  f.scheduler.tick();
+  f.clock.advance(300); f.scheduler.tick();
+  check('the empty clock restarts after somebody reappears', fired === 1);
 }
 
 // Timeout precedence: explicit invocation > valid env > 10-minute module default.

@@ -86,6 +86,37 @@ function meetingChannelId(inv: Invocation): string | number {
  *  silence timeout that maps to left_alone is driven by the injected AlonenessSource). This is a
  *  GENEROUS backstop (default 4h, override with BOT_MAX_ACTIVE_MS in ms). We floor it at the largest
  *  configured lifecycle timeout + 60s so it cannot undercut a more specific lifecycle verdict. */
+/** Nedwerk fork: seconds of an empty, silent room (after someone was there) before the bot
+ *  leaves. BOT_EMPTY_ROOM_LEAVE_MS overrides; 0 turns the rule off. */
+const DEFAULT_EMPTY_ROOM_MS = 30_000;
+function resolveEmptyRoomMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.BOT_EMPTY_ROOM_LEAVE_MS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_EMPTY_ROOM_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_EMPTY_ROOM_MS;
+}
+
+/** Participant tiles on the Meet page that are not the bot's own (Meet marks its own tile with
+ *  data-self-name). `undefined` until the meeting grid exists, so a lobby or a loading page is
+ *  "unknown", never "empty". */
+async function countOtherMeetTiles(page: BrowserSession['page']): Promise<number | undefined> {
+  return page.evaluate(() => {
+    const doc = (globalThis as any).document;
+    const tiles = Array.from(doc.querySelectorAll('[data-participant-id]')) as any[];
+    if (tiles.length === 0) return undefined;
+    const marker = doc.querySelector('[data-self-name]');
+    const selfId = marker?.closest('[data-participant-id]')?.getAttribute('data-participant-id') ?? null;
+    const ids = new Set<string>();
+    for (const el of tiles) {
+      const id = el.getAttribute('data-participant-id') || '';
+      if (!id) continue;
+      const self = el.hasAttribute('data-self-name') || !!el.querySelector('[data-self-name]') || (selfId !== null && id === selfId);
+      if (!self) ids.add(id);
+    }
+    return ids.size;
+  });
+}
+
 const DEFAULT_MAX_ACTIVE_MS = 4 * 60 * 60 * 1000; // 4 hours
 function deriveMaxActiveMs(inv: Invocation, everyoneLeftMs: number, env: NodeJS.ProcessEnv = process.env): number {
   const al = inv.automaticLeave ?? {};
@@ -223,11 +254,18 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   // the browser exists, and the restart needs the live page. Unset until the session launches
   // (and after a launch failure), in which case the guard just holds and keeps checking.
   let restartCapture: (() => void) | undefined;
+  // Nedwerk fork: the empty-room rule reads how many people other than the bot the Meet page
+  // shows, polled from the live page once the browser exists.
+  let othersVisible: number | undefined;
+  let occupancyTimer: ReturnType<typeof setInterval> | undefined;
+  const emptyRoomMs = resolveEmptyRoomMs(env);
   const aloneness = createSilenceAlonenessSource({
     activity: remoteAudioActivity,
     windowMs: aloneSilenceWindowMs,
     // Nedwerk fork: until someone speaks, the caller's no-one-joined window holds the bot instead.
     beforeFirstAudioWindowMs: inv.automaticLeave?.noOneJoinedTimeout,
+    occupancy: inv.platform === 'google_meet' ? { othersVisible: () => othersVisible } : undefined,
+    emptyRoomMs,
     onCaptureFault: () => restartCapture?.(),
   });
   console.log(`[bot] aloneness: silence adapter + deaf-capture guard enabled (window_ms=${aloneSilenceWindowMs}, before_first_audio_ms=${inv.automaticLeave?.noOneJoinedTimeout ?? 'same'})`);
@@ -260,6 +298,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // the page.evaluate on the BLANK pre-navigation page (no VexaBrowserUtils, no audio), and the
     // subsequent goto to the meeting URL destroyed that context — so capture never attached. (L4.)
     const sess = session, bp = botPipeline, rec = recording;
+    if (inv.platform === 'google_meet' && emptyRoomMs > 0) {
+      occupancyTimer = setInterval(() => {
+        void countOtherMeetTiles(sess.page)
+          .then((n) => { othersVisible = n; })
+          .catch(() => { othersVisible = undefined; });
+      }, 2_000);
+    }
     restartCapture = () => {
       void restartMixedCapture(sess.page)
         .then((requested) => console.log(`[bot] capture restart ${requested ? 'requested' : 'not applicable (no mixed rescan)'}`))
@@ -334,6 +379,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     const result = await orchestrator.run({ maxActiveMs: deriveMaxActiveMs(inv, aloneSilenceWindowMs, env) });
     return result.exitCode;
   } finally {
+    if (occupancyTimer !== undefined) clearInterval(occupancyTimer);
     releaseSignals();
     // Tear down the pipeline (capture bridge + recording + engine) + browser (best-effort — a
     // teardown failure must not change the exit code). The orchestrator already stopped the pipeline
