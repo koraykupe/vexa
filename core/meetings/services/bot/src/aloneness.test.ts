@@ -41,6 +41,7 @@ const quietEnergy = 0.001;
 function fixture(windowMs = 1_000, extra: {
   adapters?: Parameters<typeof createSilenceAlonenessSource>[0]['adapters'];
   onCaptureFault?: () => void;
+  beforeFirstAudioWindowMs?: number;
 } = {}) {
   const clock = new FakeClock();
   const scheduler = new FakeScheduler();
@@ -51,6 +52,7 @@ function fixture(windowMs = 1_000, extra: {
     windowMs,
     adapters: extra.adapters,
     onCaptureFault: extra.onCaptureFault,
+    beforeFirstAudioWindowMs: extra.beforeFirstAudioWindowMs,
     now: clock.now,
     pollMs: 10,
     setInterval: scheduler.setInterval,
@@ -419,6 +421,50 @@ function fixture(windowMs = 1_000, extra: {
   check('a capture restart re-arms frame bookkeeping but keeps what the page said about the room',
     tap.snapshot().framesDelivered === 0 && tap.snapshot().lastRemoteFrameAt === undefined
     && tap.snapshot().streamsConnected === 0 && tap.snapshot().streamsPresentAt === 300);
+}
+
+// Nedwerk fork: before anyone is heard, the longer before-first-audio window holds the bot.
+{
+  const f = fixture(1_000, { beforeFirstAudioWindowMs: 5_000 });
+  let fired = 0;
+  f.activity.ready();
+  f.source.onAlone(() => fired++);
+  f.clock.advance(4_999); f.scheduler.tick();
+  check('an empty room is waited on for the before-first-audio window', fired === 0);
+  f.clock.advance(1); f.scheduler.tick();
+  check('nobody ever arriving still ends in left_alone', fired === 1);
+  check('the verdict names the window that applied', f.logs.some((l) => l.includes('window_ms=5000')));
+}
+{
+  const f = fixture(1_000, { beforeFirstAudioWindowMs: 5_000 });
+  let fired = 0;
+  f.activity.ready();
+  f.source.onAlone(() => fired++);
+  f.clock.advance(3_000);
+  f.activity.observeRemoteEnergy(loudEnergy);
+  f.clock.advance(999); f.scheduler.tick();
+  check('once someone spoke, the short window applies', fired === 0);
+  f.clock.advance(1); f.scheduler.tick();
+  check('silence after speech leaves after the short window', fired === 1);
+}
+{
+  const f = fixture(1_000, { beforeFirstAudioWindowMs: 5_000 });
+  let fired = 0;
+  f.activity.ready();
+  f.source.onAlone(() => fired++);
+  f.activity.observeRemoteEnergy(loudEnergy);
+  f.activity.unavailable();
+  f.activity.ready();
+  f.clock.advance(1_000); f.scheduler.tick();
+  check('a capture restart does not forget that someone spoke', fired === 1);
+}
+{
+  const f = fixture(1_000);
+  let fired = 0;
+  f.activity.ready();
+  f.source.onAlone(() => fired++);
+  f.clock.advance(1_000); f.scheduler.tick();
+  check('without a before-first-audio window the upstream rule holds', fired === 1);
 }
 
 // Timeout precedence: explicit invocation > valid env > 10-minute module default.
