@@ -226,9 +226,11 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   const aloneness = createSilenceAlonenessSource({
     activity: remoteAudioActivity,
     windowMs: aloneSilenceWindowMs,
+    // Nedwerk fork: until someone speaks, the caller's no-one-joined window holds the bot instead.
+    beforeFirstAudioWindowMs: inv.automaticLeave?.noOneJoinedTimeout,
     onCaptureFault: () => restartCapture?.(),
   });
-  console.log(`[bot] aloneness: silence adapter + deaf-capture guard enabled (window_ms=${aloneSilenceWindowMs})`);
+  console.log(`[bot] aloneness: silence adapter + deaf-capture guard enabled (window_ms=${aloneSilenceWindowMs}, before_first_audio_ms=${inv.automaticLeave?.noOneJoinedTimeout ?? 'same'})`);
   if (speakerStreamConfig) console.log(`[bot] speaker-stream tuning enabled: ${JSON.stringify(speakerStreamConfig)}`);
 
   try {

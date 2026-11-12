@@ -33,6 +33,8 @@ export interface RemoteAudioActivitySnapshot {
   /** Last DELIVERED remote frame, whatever its energy — the capture chain's liveness, as opposed to
    *  `lastRemoteAudioAt` which is presence. A zero-energy frame moves this and not that. */
   lastRemoteFrameAt?: number;
+  /** Has anyone in the meeting been heard since the bot joined? Survives a capture restart. */
+  heardRemoteAudio?: boolean;
   /** Delivered remote frames since capture became ready (0 with a live stream => deaf, not silent). */
   framesDelivered?: number;
   /** Remote streams the page reported as CURRENTLY connected and carrying data. `undefined` means
@@ -92,7 +94,8 @@ export function createRemoteAudioActivityTap(options: {
     ready(): void {
       // Frame bookkeeping restarts with capture; the page's stream reports do NOT — they are a fact
       // about the ROOM, not about our capture chain, and survive a capture restart.
-      state = { ...state, available: true, lastRemoteAudioAt: now(), lastRemoteFrameAt: undefined, framesDelivered: 0 };
+      state = { ...state, available: true, lastRemoteAudioAt: now(), lastRemoteFrameAt: undefined, framesDelivered: 0,
+        heardRemoteAudio: state.heardRemoteAudio ?? false };
     },
     observeRemoteEnergy(energy: number): void {
       if (!state.available || !Number.isFinite(energy)) return;
@@ -102,7 +105,7 @@ export function createRemoteAudioActivityTap(options: {
       state = { ...state, lastRemoteFrameAt: now(), framesDelivered: (state.framesDelivered ?? 0) + 1 };
       // Digital silence (or a nonsense reading) is not presence; every other delivered frame is.
       if (energy <= 0 || energy < energyFloor) return;
-      state = { ...state, lastRemoteAudioAt: now() };
+      state = { ...state, lastRemoteAudioAt: now(), heardRemoteAudio: true };
     },
     unavailable(): void {
       // What the PAGE said about the room is not invalidated by our capture dying, so the presence
@@ -110,6 +113,7 @@ export function createRemoteAudioActivityTap(options: {
       // `available: false` is the fail-closed state, and it short-circuits every adapter.
       state = {
         available: false,
+        heardRemoteAudio: state.heardRemoteAudio,
         streamsConnected: state.streamsConnected,
         streamsObservedAt: state.streamsObservedAt,
         streamsPresentAt: state.streamsPresentAt,
@@ -223,6 +227,10 @@ export function resolveAloneSilenceWindowMs(
 export function createSilenceAlonenessSource(options: {
   activity: RemoteAudioActivitySource;
   windowMs: number;
+  /** Nedwerk fork: the silence window until anyone has been heard at all. A bot that joins before
+   *  the people do must not leave the waiting room it sits in; once someone has spoken, `windowMs`
+   *  applies. Unset (or not longer than `windowMs`) = `windowMs` throughout, the upstream rule. */
+  beforeFirstAudioWindowMs?: number;
   adapters?: readonly AlonenessAdapter[];
   now?: () => number;
   pollMs?: number;
@@ -261,9 +269,14 @@ export function createSilenceAlonenessSource(options: {
         if (stopped || fired || adapters.length === 0) return;
         const at = now();
         const snapshot = options.activity.snapshot();
+        const windowMs = snapshot.heardRemoteAudio === false
+          && options.beforeFirstAudioWindowMs !== undefined
+          && options.beforeFirstAudioWindowMs > options.windowMs
+          ? options.beforeFirstAudioWindowMs
+          : options.windowMs;
         let captureFault = false;
         for (const adapter of adapters) {
-          const verdict = adapter.evaluate(snapshot, at, options.windowMs);
+          const verdict = adapter.evaluate(snapshot, at, windowMs);
           // A deaf capture is not a leave and not a veto: it withholds the verdict and reports.
           if (verdict === 'capture-fault') { captureFault = true; continue; }
           if (verdict !== 'alone') return;
@@ -291,7 +304,7 @@ export function createSilenceAlonenessSource(options: {
         captureFaultLoggedAt = null;
         fired = true;
         stop();
-        log(`aloneness: silence verdict (last_remote_audio_at=${snapshot.lastRemoteAudioAt}, window_ms=${options.windowMs})`);
+        log(`aloneness: silence verdict (last_remote_audio_at=${snapshot.lastRemoteAudioAt}, window_ms=${windowMs})`);
         callback();
       };
 
