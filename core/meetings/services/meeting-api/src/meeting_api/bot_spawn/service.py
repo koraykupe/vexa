@@ -536,6 +536,7 @@ async def request_bot(
     #     userdata prefix).
     authenticated = env_flag("BOT_AUTHENTICATED", False)
     auth_userdata_path: Optional[str] = None
+    userdata_read_only = False
     auth_s3: dict[str, Optional[str]] = {}
     if authenticated:
         auth_userdata_path = os.getenv("BOT_USERDATA_S3_PATH") or None
@@ -603,11 +604,22 @@ async def request_bot(
     if authenticated and auth_userdata_path:
         conflict = await repo.find_active_by_userdata(auth_userdata_path)
         if conflict is not None and (reused_row is None or conflict["id"] != reused_row["id"]):
-            # Nedwerk fork: BOT_AUTH_BUSY_FALLBACK=anonymous sends a guest (not signed-in) bot to
-            # the second meeting instead of refusing it. The stored session stays one-writer: the
-            # guest bot carries no userdata, so nothing reads or writes the cookie jar twice. It
-            # waits in the lobby like any anonymous bot.
-            if os.getenv("BOT_AUTH_BUSY_FALLBACK", "").strip().lower() == "anonymous":
+            # Nedwerk fork: BOT_AUTH_BUSY_FALLBACK decides what a second concurrent meeting gets.
+            #   shared    — another SIGNED-IN bot on the same identity. Every bot already runs in
+            #               its own profile dir restored from the store, so two can be live at
+            #               once; what must stay single is the write-back. This bot restores the
+            #               session read-only and never writes it, and its row carries no
+            #               userdata path, so the live writer keeps the store to itself.
+            #   anonymous — a guest (not signed-in) bot that waits in the lobby.
+            fallback = os.getenv("BOT_AUTH_BUSY_FALLBACK", "").strip().lower()
+            if fallback == "shared":
+                log_event(
+                    "bot_spawn_auth_session_shared", audience="user", level="info",
+                    span="bots.create", user_id=user_id,
+                    fields={"writer_meeting_id": conflict["id"]},
+                )
+                userdata_read_only = True
+            elif fallback == "anonymous":
                 log_event(
                     "bot_spawn_auth_session_busy_fallback", audience="user", level="warning",
                     span="bots.create", user_id=user_id,
@@ -709,7 +721,7 @@ async def request_bot(
             meeting_data["transcription_provider"] = transcription_provider
         meeting_data["service_authority"] = authority_record
         # The serialization key for authenticated spawns — find_active_by_userdata matches on it.
-        if authenticated and auth_userdata_path:
+        if authenticated and auth_userdata_path and not userdata_read_only:
             meeting_data["auth_userdata_path"] = auth_userdata_path
         # Per-user webhook config carried on the meeting (delivered by the lifecycle callback).
         # Stripped from any outbound meeting projection (webhooks.delivery._INTERNAL_DATA_KEYS). At
@@ -783,6 +795,7 @@ async def request_bot(
         recording_upload_url=f"{meeting_api_url}/internal/recordings/upload",
         authenticated=True if authenticated else None,
         userdata_s3_path=auth_userdata_path,
+        userdata_read_only=True if userdata_read_only else None,
         s3_endpoint=auth_s3.get("s3_endpoint"),
         s3_bucket=auth_s3.get("s3_bucket"),
         s3_access_key=auth_s3.get("s3_access_key"),
