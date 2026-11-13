@@ -663,7 +663,9 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
       // spawn restores the freshest state instead of a decaying snapshot. Clean teardown only:
       // a SIGKILL never reaches close(), so a hard-killed meeting keeps the last durable copy.
       // Failures are attributed warnings, bounded per upload — teardown never hangs on S3.
-      if (inv.authenticated && inv.userdataS3Path) {
+      // A read-only bot (a second meeting on an identity another live bot holds) leaves the
+      // store to that writer: two write-backs would race over one cookie jar.
+      if (inv.authenticated && inv.userdataS3Path && !inv.userdataReadOnly) {
         try {
           syncBrowserDataToS3(s3Config, dataDir);
         } catch (e) {

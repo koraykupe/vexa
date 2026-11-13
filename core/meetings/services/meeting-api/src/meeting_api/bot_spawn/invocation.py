@@ -153,6 +153,7 @@ def build_invocation(
     transcription_model: Optional[str] = None,
     authenticated: Optional[bool] = None,
     userdata_s3_path: Optional[str] = None,
+    userdata_read_only: Optional[bool] = None,
     s3_endpoint: Optional[str] = None,
     s3_bucket: Optional[str] = None,
     s3_access_key: Optional[str] = None,
@@ -198,6 +199,9 @@ def build_invocation(
         # so anonymous invocations carry no auth fields at all.
         "authenticated": authenticated,
         "userdataS3Path": userdata_s3_path,
+        # A concurrent bot on an identity another live bot already holds: it restores the stored
+        # session like any signed-in bot but never writes it back, so the store keeps one writer.
+        "userdataReadOnly": userdata_read_only,
         "s3Endpoint": s3_endpoint,
         "s3Bucket": s3_bucket,
         "s3AccessKey": s3_access_key,

@@ -94,6 +94,8 @@ export interface Invocation {
   // ── authenticated meeting bot (persistent browser context from S3) ──
   authenticated?: boolean;
   userdataS3Path?: string;
+  /** Restore the stored session but never write it back: another live bot holds this identity. */
+  userdataReadOnly?: boolean;
   s3Endpoint?: string;
   s3Bucket?: string;
   s3AccessKey?: string;

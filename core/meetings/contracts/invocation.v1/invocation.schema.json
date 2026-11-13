@@ -51,6 +51,7 @@
         "cameraEnabled": { "type": "boolean" },
         "authenticated": { "type": "boolean", "description": "persistent browser context from S3" },
         "userdataS3Path": { "type": "string" },
+        "userdataReadOnly": { "type": "boolean", "description": "restore the stored session but never write it back (a second concurrent bot on one identity)" },
         "s3Endpoint": { "type": "string" },
         "s3Bucket": { "type": "string" },
         "s3AccessKey": { "type": "string", "description": "SECRET; placeholder in goldens" },

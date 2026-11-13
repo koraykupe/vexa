@@ -160,6 +160,28 @@ async def test_busy_session_falls_back_to_anonymous_when_enabled(monkeypatch):
     assert len(runtime.specs) == 3
 
 
+async def test_busy_session_shares_the_identity_read_only_when_enabled(monkeypatch):
+    """With BOT_AUTH_BUSY_FALLBACK=shared the second concurrent meeting gets a SIGNED-IN bot too,
+    restoring the same stored session read-only; only the first bot's row holds the userdata path,
+    so it stays the one writer and later spawns keep sharing."""
+    _set_auth_env(monkeypatch, BOT_AUTH_BUSY_FALLBACK="shared")
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    first = await _spawn(repo, runtime, native_id="aaa-aaaa-aaa")
+    second = await _spawn(repo, runtime, native_id="bbb-bbbb-bbb")
+    third = await _spawn(repo, runtime, native_id="ccc-cccc-ccc")
+    assert len({first["id"], second["id"], third["id"]}) == 3
+    configs = [json.loads(s["env"]["VEXA_BOT_CONFIG"]) for s in runtime.specs]
+    for cfg in configs:
+        assert cfg["authenticated"] is True
+        assert cfg["userdataS3Path"] == "userdata/bot-identity-1"
+        conforms_invocation(cfg)
+    assert "userdataReadOnly" not in configs[0]
+    assert configs[1]["userdataReadOnly"] is True
+    assert configs[2]["userdataReadOnly"] is True
+    assert repo._meetings[first["id"]]["data"]["auth_userdata_path"] == "userdata/bot-identity-1"
+    assert "auth_userdata_path" not in (repo._meetings[second["id"]].get("data") or {})
+
+
 async def test_busy_session_still_refuses_without_fallback(monkeypatch):
     _set_auth_env(monkeypatch, BOT_AUTH_BUSY_FALLBACK=None)
     repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
