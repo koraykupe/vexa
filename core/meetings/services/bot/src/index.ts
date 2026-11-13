@@ -37,6 +37,7 @@ import { uploadSignalTapes } from './signal-upload.js';
 import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, restartMixedCapture, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
 import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
+import { createMeetingSnapshotter, httpSnapshotUploader, resolveSnapshotCount, type MeetingSnapshotter } from './meeting-snapshots.js';
 import { installSignalHandlers } from './signals.js';
 import type {
   JoinDriver,
@@ -233,6 +234,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   console.log(`[bot] aloneness: silence adapter + deaf-capture guard enabled (window_ms=${aloneSilenceWindowMs}, before_first_audio_ms=${inv.automaticLeave?.noOneJoinedTimeout ?? 'same'})`);
   if (speakerStreamConfig) console.log(`[bot] speaker-stream tuning enabled: ${JSON.stringify(speakerStreamConfig)}`);
 
+  // Nedwerk fork: a few pictures of the meeting grid while people talk (meeting-snapshots.ts).
+  let snapshotter: MeetingSnapshotter | undefined;
+  const snapshotCount = resolveSnapshotCount(env);
+
   try {
     session = await launchBrowser(inv);                                   // L4 (O6/VM)
     join = createBrowserJoinDriver(session.page, inv);
@@ -289,7 +294,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // each failure surfaces LOUD via onFault (console with a full-fidelity serr(e)) instead of
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
     pipeline = createLivePipeline({
-      startCapture: () => startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity),   // on the live meeting page
+      startCapture: () => {
+        snapshotter?.start();                                                                  // admitted: pictures may be taken
+        return startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity);   // on the live meeting page
+      },
       startRecording: rec ? () => startRecording(sess.page, inv, rec) : undefined,          // MediaRecorder → recording.v1
       engine: bp,
       onFault: (stage, e) => {
@@ -298,6 +306,16 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     });
     // Voice: tee acts so `speak`/`speak_stop` reach the SpeakController (gated on voiceAgentEnabled).
     const speak = createSpeakController(session.page, inv);
+    if (snapshotCount > 0) {
+      snapshotter = createMeetingSnapshotter({
+        count: snapshotCount,
+        activity: remoteAudioActivity,
+        capture: async () => new Uint8Array(await sess.page.screenshot({ type: 'jpeg', quality: 70 })),
+        upload: httpSnapshotUploader(inv),
+        log: (m) => console.log(`[bot] ${m}`),
+      });
+    }
+    console.log(`[bot] meeting snapshots: ${snapshotCount > 0 ? `up to ${snapshotCount}` : 'off'}`);
     acts = teeActs(liveActs, voiceHandler(speak));
   } catch (e) {
     console.error(`[bot] browser launch/capture wiring failed — falling back to clean terminal failed: ${String(e)}`);
@@ -339,6 +357,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // teardown failure must not change the exit code). The orchestrator already stopped the pipeline
     // on a normal end; createLivePipeline.stop() is idempotent, and this also covers an early-exit
     // path that skipped the orchestrator's teardown. (#593)
+    snapshotter?.stop();
     await pipeline.stop().catch(() => { /* best-effort */ });
     await signalRecorder?.close().catch(() => { /* best-effort */ });
     // The two teardown sidecars, written BEFORE the upload reads the directory. Both are

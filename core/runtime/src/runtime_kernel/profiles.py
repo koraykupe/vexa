@@ -142,6 +142,8 @@ def default_registry() -> ProfileRegistry:
             "BOT_SPEAKER_CONFIRM_THRESHOLD",
             "BOT_SPEAKER_MAX_BUFFER_SEC",
             "BOT_SPEAKER_IDLE_TIMEOUT_SEC",
+            # Nedwerk fork: how many meeting snapshots a bot takes (0 = off).
+            "BOT_SNAPSHOT_COUNT",
         )
         if os.environ.get(key, "").strip()
     }

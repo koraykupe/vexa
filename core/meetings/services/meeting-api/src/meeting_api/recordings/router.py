@@ -29,6 +29,15 @@ from .service import (
     upload_chunk,
     upload_signal_tape,
 )
+from .snapshots import (
+    SNAPSHOT_MEDIA_TYPE,
+    InvalidSnapshot,
+    MeetingNotOwned,
+    delete_snapshots,
+    get_snapshot,
+    list_snapshots,
+    upload_snapshot,
+)
 
 
 #: Default page size for ``GET /recordings``. The route used to have none: it answered with every
@@ -229,6 +238,32 @@ def build_router(
                     part=part, media_format=media_format,
                 )
             except InvalidSignalTape as e:
+                raise HTTPException(status_code=422, detail=str(e))
+            except SessionNotFound as e:
+                raise HTTPException(status_code=404, detail=str(e))
+            return JSONResponse(content=receipt)
+        # Nedwerk fork: a meeting snapshot (a still picture of the grid) rides the same edge and,
+        # like a tape, takes its own server path: one object per picture, never a recording.
+        if media_type == SNAPSHOT_MEDIA_TYPE:
+            bearer = _bearer_token(authorization)
+            internal_secret = os.getenv("INTERNAL_API_SECRET")
+            token_meeting_id = None
+            if not (internal_secret and bearer == internal_secret):
+                try:
+                    claims = _verify_meeting_token(bearer, secret=token_secret)
+                except ValueError as e:
+                    raise HTTPException(status_code=401,
+                                        detail=f"Invalid recording upload token: {e}")
+                token_meeting_id = int(claims["meeting_id"])
+            try:
+                receipt = await upload_snapshot(
+                    repo, storage,
+                    token_meeting_id=token_meeting_id,
+                    session_uid=session_uid, data=await file.read(),
+                    seq=meta.get("seq"), taken_at_ms=meta.get("taken_at_ms"),
+                    media_format=media_format,
+                )
+            except InvalidSnapshot as e:
                 raise HTTPException(status_code=422, detail=str(e))
             except SessionNotFound as e:
                 raise HTTPException(status_code=404, detail=str(e))
@@ -469,5 +504,53 @@ def build_router(
                 "Content-Length": str(len(slice_bytes)),
             },
         )
+
+    # ── Nedwerk fork: meeting snapshots (owner-scoped; see snapshots.py) ──────────────────────
+    @router.get("/snapshots/{meeting_id}")
+    async def list_meeting_snapshots(
+        meeting_id: int,
+        x_user_id: Optional[str] = Header(default=None),
+    ):
+        """The still pictures the bot took of this meeting, oldest first."""
+        user_id = _resolve_user_id(x_user_id)
+        try:
+            items = await list_snapshots(repo, storage, user_id=user_id, meeting_id=meeting_id)
+        except MeetingNotOwned:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+        return JSONResponse(content={"meeting_id": meeting_id, "snapshots": items})
+
+    @router.get("/snapshots/{meeting_id}/{snapshot_id}")
+    async def get_meeting_snapshot(
+        meeting_id: int,
+        snapshot_id: str,
+        x_user_id: Optional[str] = Header(default=None),
+    ):
+        """One picture's JPEG bytes."""
+        user_id = _resolve_user_id(x_user_id)
+        try:
+            data = await get_snapshot(
+                repo, storage, user_id=user_id, meeting_id=meeting_id, snapshot_id=snapshot_id,
+            )
+        except MeetingNotOwned:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+        if data is None:
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        return Response(
+            content=data, media_type="image/jpeg",
+            headers={"Cache-Control": "private, no-store", "Content-Length": str(len(data))},
+        )
+
+    @router.delete("/snapshots/{meeting_id}")
+    async def delete_meeting_snapshots(
+        meeting_id: int,
+        x_user_id: Optional[str] = Header(default=None),
+    ):
+        """Delete every picture of this meeting (the retention sweep's call)."""
+        user_id = _resolve_user_id(x_user_id)
+        try:
+            count = await delete_snapshots(repo, storage, user_id=user_id, meeting_id=meeting_id)
+        except MeetingNotOwned:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+        return JSONResponse(content={"meeting_id": meeting_id, "deleted": count})
 
     return router

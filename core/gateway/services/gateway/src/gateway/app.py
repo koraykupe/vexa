@@ -592,6 +592,19 @@ def create_app(
             "GET", _meeting(f"/recordings/{recording_id}/media/{media_file_id}/raw"), request
         )
 
+    # Nedwerk fork: the still pictures a bot took of a meeting (owner-scoped downstream).
+    @app.get("/snapshots/{meeting_id}")
+    async def list_meeting_snapshots(meeting_id: int, request: Request):
+        return await _forward("GET", _meeting(f"/snapshots/{meeting_id}"), request)
+
+    @app.get("/snapshots/{meeting_id}/{snapshot_id}")
+    async def get_meeting_snapshot(meeting_id: int, snapshot_id: str, request: Request):
+        return await _forward("GET", _meeting(f"/snapshots/{meeting_id}/{snapshot_id}"), request)
+
+    @app.delete("/snapshots/{meeting_id}")
+    async def delete_meeting_snapshots(meeting_id: int, request: Request):
+        return await _forward("DELETE", _meeting(f"/snapshots/{meeting_id}"), request)
+
     @app.get("/meetings")
     async def meetings(request: Request):
         return await _forward("GET", _meeting("/meetings"), request)
