@@ -38,6 +38,7 @@ import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, restartMixedCapture, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
 import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
 import { createMeetingSnapshotter, httpSnapshotUploader, resolveSnapshotCount, type MeetingSnapshotter } from './meeting-snapshots.js';
+import { withTiledLayout } from './meet-layout.js';
 import { installSignalHandlers } from './signals.js';
 import type {
   JoinDriver,
@@ -355,7 +356,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
       snapshotter = createMeetingSnapshotter({
         count: snapshotCount,
         activity: remoteAudioActivity,
-        capture: async () => new Uint8Array(await sess.page.screenshot({ type: 'jpeg', quality: 70 })),
+        capture: (() => {
+          const shot = async () => new Uint8Array(await sess.page.screenshot({ type: 'jpeg', quality: 70 }));
+          // On Meet every participant gets an equal tile first, not only whoever is talking.
+          return inv.platform === 'google_meet'
+            ? withTiledLayout(sess.page, shot, (m) => console.log(`[bot] ${m}`))
+            : shot;
+        })(),
         upload: httpSnapshotUploader(inv),
         log: (m) => console.log(`[bot] ${m}`),
       });
