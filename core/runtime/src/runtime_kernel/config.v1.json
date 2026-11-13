@@ -192,6 +192,13 @@
    "targets": ["compose", "helm", "lite"]
   },
   {
+   "key": "BOT_SNAPSHOT_COUNT",
+   "class": "defaulted",
+   "default": "(unset — bot default 4)",
+   "description": "Nedwerk fork: still pictures of the meeting grid a bot takes while people talk (0 = off); forwarded to spawned bots",
+   "targets": ["compose", "lite"]
+  },
+  {
    "key": "AGENT_IMAGE",
    "class": "capability",
    "capability": "agent_spawn",
