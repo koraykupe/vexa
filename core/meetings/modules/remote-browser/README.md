@@ -23,6 +23,13 @@ persisted (~200 KB), not the full profile.
 > NOT incognito (incognito wipes the stored cookies that make an authenticated join work). Session mode
 > additionally carries the CDP debug args so an agent can attach over the gateway proxy.
 
+3. `session-keeper-cli` — the meeting-free renewal (`src/keeper.ts`): restore the stored session, and
+   when it is signed out or `SESSION_MAX_AGE_DAYS` (13) old, sign out and in again with
+   `BOT_GOOGLE_EMAIL` + `BOT_GOOGLE_PASSWORD` and upload it, so a fixed web-session limit (14 days on
+   Workspace editions without a session-length setting) never ends at a meeting's start. Run daily by
+   the host cron script [`deploy/compose/bin/session-keeper`](../../../../deploy/compose/bin/session-keeper),
+   which skips while a meeting bot runs and POSTs the signed result to a receiver.
+
 ## Surface
 `provisionLogin` · `launchPersistentBrowser` · `validateLoggedIn` · `getAuthenticatedBrowserArgs` ·
 `getBrowserSessionArgs` · `CDP_DEBUG_ARGS` · session store (`syncBrowserDataFromS3`/`…ToS3`,
@@ -34,7 +41,8 @@ persisted (~200 KB), not the full profile.
 `pnpm --filter @vexa/remote-browser run build` — `tsc` clean (self-contained CommonJS `tsconfig`:
 extensionless relative imports + value-imports of `./types`, so it does NOT extend the ESM
 `tsconfig.base`). [`src/auth.smoke.test.ts`](src/auth.smoke.test.ts)
-(`pnpm --filter @vexa/remote-browser test`) pins the two contract-level invariants in isolation (no real
+(`pnpm --filter @vexa/remote-browser test`, with [`src/keeper.test.ts`](src/keeper.test.ts) for the
+renewal decision and the sign-in page driver) pins the two contract-level invariants in isolation (no real
 browser, no network): the launch-flag safety set, and the `validateLoggedIn` AND-matrix (loggedIn IFF
 not bounced to a sign-in URL AND a known auth cookie is present) driven through a stub Playwright `Page`.
 The real login / persistence / restore paths need an **integration env** (a headed Chromium + VNC, and
