@@ -378,6 +378,9 @@ services:
       - BOT_S3_BUCKET=${BOT_S3_BUCKET:-}
       - BOT_S3_ACCESS_KEY=${BOT_S3_ACCESS_KEY:-}
       - BOT_S3_SECRET_KEY=${BOT_S3_SECRET_KEY:-}
+      # Nedwerk fork: the bot account's password, answered on Google's password
+      # re-verification page. Passed to bots through the workload env only.
+      - BOT_GOOGLE_PASSWORD=${BOT_GOOGLE_PASSWORD:-}
       # Optional operator-owned service-authority.v1 boundary. Empty is explicit OSS allow-all.
       - VEXA_SERVICE_AUTHORITY_CONFIG=${VEXA_SERVICE_AUTHORITY_CONFIG:-}
       - VEXA_SERVICE_AUTHORITY_SECRET=${VEXA_SERVICE_AUTHORITY_SECRET:-}
