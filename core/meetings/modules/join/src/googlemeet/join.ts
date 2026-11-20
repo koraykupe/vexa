@@ -26,6 +26,21 @@ export class AuthSessionError extends AdmissionError {
 }
 
 /**
+ * Google sign-in page guard (authenticated mode): when the persisted session
+ * has expired or Google wants the password re-verified, opening the meeting
+ * URL lands on accounts.google.com (a /signin/challenge or /reauth page)
+ * instead of the Meet lobby. Nothing there is a join CTA, so the bot can only
+ * fail closed with the typed auth_session_missing outcome.
+ */
+export function isGoogleSignInPage(url: string): boolean {
+  try {
+    return new URL(url).hostname === "accounts.google.com";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Signed-out guard probe (authenticated mode): a guest lobby renders a name
  * input; a signed-in lobby never does, in any locale. Structural
  * (jsname/attribute) selectors carry the detection so it cannot fail open on a
@@ -399,6 +414,16 @@ export async function joinGoogleMeeting(
     // Diagnostic screenshot to see what the lobby shows
     await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-auth-lobby.png', fullPage: true });
     log("📸 Diagnostic screenshot: auth lobby state");
+
+    // A sign-in or password re-verification page is not a lobby: its "Next"
+    // button would pass for the join CTA and the bot would then poll for an
+    // admission that can never come.
+    if (isGoogleSignInPage(page.url())) {
+      log("📸 Screenshot: authenticated mode but Google asks to sign in again (session expired or re-verification).");
+      throw new AuthSessionError(
+        "Google asks the bot account to sign in again — the stored session expired or needs password re-verification. Re-authenticate the profile and retry."
+      );
+    }
 
     // Mute mic and camera if visible
     try {
