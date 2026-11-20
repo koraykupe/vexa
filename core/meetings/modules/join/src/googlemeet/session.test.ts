@@ -20,7 +20,7 @@
  * Run: npx tsx src/googlemeet/session.test.ts
  */
 
-import { joinGoogleMeeting, isGoogleSignedOutLobby, AuthSessionError } from './join';
+import { joinGoogleMeeting, isGoogleSignedOutLobby, isGoogleSignInPage, AuthSessionError } from './join';
 import { googleAuthJoinCtaSelectors, googleSignedOutLobbyProbeSelectors } from './selectors';
 
 // Structural (locale-agnostic) vs English-literal selector split, derived from
@@ -37,7 +37,7 @@ const PROBE_ENGLISH = googleSignedOutLobbyProbeSelectors.filter(isEnglishLiteral
  * that resolve on this page; every click on a resolved handle is recorded in
  * `clicks` (keyed by the selector that produced the handle).
  */
-function mockPage(visible: string[]) {
+function mockPage(visible: string[], url = 'https://meet.google.com/abc-defg-hij') {
   const clicks: string[] = [];
   const handle = (sel: string) => ({
     click: async () => { clicks.push(sel); },
@@ -51,7 +51,7 @@ function mockPage(visible: string[]) {
     waitForTimeout: async () => {},
     fill: async () => {},
     mouse: { move: async () => {} },
-    url: () => 'https://meet.google.com/abc-defg-hij',
+    url: () => url,
     // The lobby-CTA resolvers read the observed locale for the failure
     // diagnostic and run the structural scan through evaluateHandle; neither
     // resolves anything on this fixture, which is driven purely by `visible`.
@@ -148,6 +148,28 @@ function check(name: string, ok: boolean, detail = '') {
     check('signed-in non-English lobby → join proceeds', err === null, String(err));
     check('…and the CTA was clicked exactly once', page.clicks.length === 1, `clicks: ${page.clicks}`);
   }
+
+  console.log('\n=== Google sign-in / re-verification page instead of the lobby ===');
+  // 5. Expired session: Meet redirects to the password challenge. Its "Next"
+  //    button matches the structural CTA selector, so the guard must fire
+  //    before any CTA is looked up.
+  {
+    const page = mockPage(
+      [...CTA_STRUCTURAL],
+      'https://accounts.google.com/v3/signin/challenge/pwd?continue=https%3A%2F%2Fmeet.google.com%2Freauth',
+    );
+    const err = await join(page).then(() => null, (e: unknown) => e);
+    check(
+      'password re-verification page → AuthSessionError("auth_session_missing")',
+      err instanceof AuthSessionError && err.outcome === 'auth_session_missing',
+      `got ${err ? (err as Error).name + ': ' + (err as Error).message : 'RESOLVED (clicked Next and polled for admission)'}`,
+    );
+    check('…and nothing was clicked', page.clicks.length === 0, `clicks: ${page.clicks}`);
+  }
+  check('accounts.google.com sign-in URL → sign-in page', isGoogleSignInPage('https://accounts.google.com/v3/signin/identifier?continue=x'));
+  check('meet.google.com lobby URL → NOT a sign-in page', !isGoogleSignInPage('https://meet.google.com/abc-defg-hij?hl=en'));
+  check('meet.google.com URL quoting accounts.google.com → NOT a sign-in page', !isGoogleSignInPage('https://meet.google.com/x?continue=https://accounts.google.com/'));
+  check('unparseable URL → NOT a sign-in page', !isGoogleSignInPage('about:blank:::'));
 
   console.log('\n=== isGoogleSignedOutLobby unit rows ===');
   check('structural name input alone → signed-out', await isGoogleSignedOutLobby(mockPage(PROBE_STRUCTURAL)));
