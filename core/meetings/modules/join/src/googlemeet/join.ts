@@ -40,6 +40,54 @@ export function isGoogleSignInPage(url: string): boolean {
   }
 }
 
+/** The password field of Google's sign-in / re-verification challenge. */
+export const googlePasswordInputSelector = 'input[type="password"][name="Passwd"], input[type="password"]';
+
+/** How long Google gets to accept the password and send the browser back to Meet. */
+const RE_SIGN_IN_TIMEOUT_MS = 30000;
+
+/**
+ * Answer Google's password re-verification with the bot account's own password
+ * (BOT_GOOGLE_PASSWORD), so an expired web session renews itself instead of
+ * costing a meeting. Only the password challenge is answered: an account
+ * chooser, an e-mail step, a second factor or a captcha all leave the browser on
+ * accounts.google.com, and the caller fails closed.
+ *
+ * Synthetic input on purpose: the humanized path types through an xdotool
+ * argv, and a failed run would carry the password into the error it logs.
+ *
+ * Returns true once the browser has left accounts.google.com.
+ */
+export async function answerGooglePasswordChallenge(
+  page: Page,
+  password: string | undefined,
+  timeoutMs: number = RE_SIGN_IN_TIMEOUT_MS,
+): Promise<boolean> {
+  if (!password) {
+    log("Google asks for the bot account's password; BOT_GOOGLE_PASSWORD is not set, so the bot cannot sign in again.");
+    return false;
+  }
+  const field = await page.$(googlePasswordInputSelector);
+  if (!field) {
+    log(`Google sign-in page is not a password challenge (${new URL(page.url()).pathname}); not answering it.`);
+    return false;
+  }
+  log("Google asks for the bot account's password again; answering it.");
+  await field.fill(password);
+  await field.press("Enter");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(1000);
+    if (!isGoogleSignInPage(page.url())) {
+      log(`Signed in again; back on ${new URL(page.url()).hostname}.`);
+      return true;
+    }
+  }
+  await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-auth-resignin-failed.png', fullPage: true });
+  log(`📸 Screenshot: Google kept the bot on its sign-in pages after the password (${new URL(page.url()).pathname}).`);
+  return false;
+}
+
 /**
  * Signed-out guard probe (authenticated mode): a guest lobby renders a name
  * input; a signed-in lobby never does, in any locale. Structural
@@ -420,9 +468,15 @@ export async function joinGoogleMeeting(
     // admission that can never come.
     if (isGoogleSignInPage(page.url())) {
       log("📸 Screenshot: authenticated mode but Google asks to sign in again (session expired or re-verification).");
-      throw new AuthSessionError(
-        "Google asks the bot account to sign in again — the stored session expired or needs password re-verification. Re-authenticate the profile and retry."
-      );
+      if (!(await answerGooglePasswordChallenge(page, process.env.BOT_GOOGLE_PASSWORD))) {
+        throw new AuthSessionError(
+          "Google asks the bot account to sign in again — the stored session expired or needs password re-verification. Re-authenticate the profile and retry."
+        );
+      }
+      log("Waiting for lobby to load after signing in again...");
+      await page.waitForTimeout(5000);
+      await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-auth-lobby-after-resignin.png', fullPage: true });
+      log("📸 Diagnostic screenshot: auth lobby state after signing in again");
     }
 
     // Mute mic and camera if visible

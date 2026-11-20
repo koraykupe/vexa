@@ -86,6 +86,28 @@ async def test_knob_populates_stock_post_bots_spawn(monkeypatch):
     assert inv["s3SecretKey"] == "userdata-secret"
 
 
+async def test_google_password_rides_the_workload_env_not_the_invocation(monkeypatch):
+    _set_auth_env(monkeypatch, BOT_GOOGLE_PASSWORD="bot-pw")
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    await _spawn(repo, runtime)
+    env = runtime.specs[0]["env"]
+    assert env["BOT_GOOGLE_PASSWORD"] == "bot-pw"
+    assert "bot-pw" not in env["VEXA_BOT_CONFIG"]
+
+
+async def test_no_google_password_without_the_env_or_the_knob(monkeypatch):
+    _set_auth_env(monkeypatch, BOT_GOOGLE_PASSWORD=None)
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    await _spawn(repo, runtime)
+    assert "BOT_GOOGLE_PASSWORD" not in runtime.specs[0]["env"]
+
+    # An anonymous deployment never ships the password, even when it is set.
+    _set_auth_env(monkeypatch, BOT_AUTHENTICATED=None, BOT_GOOGLE_PASSWORD="bot-pw")
+    repo, runtime = InMemoryMeetingRepo(), FakeRuntimeClient()
+    await _spawn(repo, runtime, native_id="xyz-wxyz-xyz")
+    assert "BOT_GOOGLE_PASSWORD" not in runtime.specs[0]["env"]
+
+
 async def test_knob_off_ships_no_auth_fields(monkeypatch):
     """Base control: without the knob the invocation is the anonymous shape — zero auth fields."""
     _set_auth_env(monkeypatch, BOT_AUTHENTICATED=None)
