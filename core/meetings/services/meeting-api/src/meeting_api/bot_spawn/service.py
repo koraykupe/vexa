@@ -538,6 +538,7 @@ async def request_bot(
     auth_userdata_path: Optional[str] = None
     userdata_read_only = False
     auth_s3: dict[str, Optional[str]] = {}
+    google_password: Optional[str] = None
     if authenticated:
         auth_userdata_path = os.getenv("BOT_USERDATA_S3_PATH") or None
         auth_s3 = {
@@ -546,6 +547,10 @@ async def request_bot(
             "s3_access_key": os.getenv("BOT_S3_ACCESS_KEY") or None,
             "s3_secret_key": os.getenv("BOT_S3_SECRET_KEY") or None,
         }
+        # The bot account's own password, for Google's periodic password re-verification
+        # (a Workspace web session ends after its fixed length). Rides the workload env, never
+        # the invocation: it is not part of the sealed contract and never reaches the DB.
+        google_password = os.getenv("BOT_GOOGLE_PASSWORD") or None
         if not (auth_userdata_path and auth_s3["s3_endpoint"] and auth_s3["s3_bucket"]):
             raise AuthSessionNotConfigured(
                 "BOT_AUTHENTICATED is set but the userdata store is incomplete — set "
@@ -824,6 +829,7 @@ async def request_bot(
         workload_id=f"mtg-{meeting_id}-{connection_id[:8]}",
         invocation=invocation,
         callback_url=f"{meeting_api_url}/runtime/callback",
+        extra_env={"BOT_GOOGLE_PASSWORD": google_password} if google_password else None,
     )
     try:
         result = await runtime.create_workload(spec)

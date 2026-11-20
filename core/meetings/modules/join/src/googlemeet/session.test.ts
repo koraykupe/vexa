@@ -20,7 +20,10 @@
  * Run: npx tsx src/googlemeet/session.test.ts
  */
 
-import { joinGoogleMeeting, isGoogleSignedOutLobby, isGoogleSignInPage, AuthSessionError } from './join';
+import {
+  joinGoogleMeeting, isGoogleSignedOutLobby, isGoogleSignInPage, AuthSessionError,
+  answerGooglePasswordChallenge, googlePasswordInputSelector,
+} from './join';
 import { googleAuthJoinCtaSelectors, googleSignedOutLobbyProbeSelectors } from './selectors';
 
 // Structural (locale-agnostic) vs English-literal selector split, derived from
@@ -170,6 +173,50 @@ function check(name: string, ok: boolean, detail = '') {
   check('meet.google.com lobby URL → NOT a sign-in page', !isGoogleSignInPage('https://meet.google.com/abc-defg-hij?hl=en'));
   check('meet.google.com URL quoting accounts.google.com → NOT a sign-in page', !isGoogleSignInPage('https://meet.google.com/x?continue=https://accounts.google.com/'));
   check('unparseable URL → NOT a sign-in page', !isGoogleSignInPage('about:blank:::'));
+
+  console.log('\n=== answering the password challenge with BOT_GOOGLE_PASSWORD ===');
+  const PWD_URL = 'https://accounts.google.com/v3/signin/challenge/pwd?continue=https%3A%2F%2Fmeet.google.com%2Freauth';
+  /** The challenge page: a password field whose Enter sends the browser to `after`. */
+  function challengePage(after: string | null) {
+    const page = mockPage([...CTA_STRUCTURAL], PWD_URL);
+    let url = PWD_URL;
+    page.url = () => url;
+    page.typed = [] as string[];
+    const base$ = page.$;
+    page.$ = async (sel: string) =>
+      sel === googlePasswordInputSelector
+        ? {
+            fill: async (v: string) => { page.typed.push(v); },
+            press: async (k: string) => { if (k === 'Enter' && after) url = after; },
+          }
+        : base$(sel);
+    return page;
+  }
+
+  // 6. Password set, Google accepts it → back on Meet, the join proceeds.
+  {
+    process.env.BOT_GOOGLE_PASSWORD = 'pw-for-test';
+    const page = challengePage('https://meet.google.com/abc-defg-hij?hl=en');
+    const err = await join(page).then(() => null, (e: unknown) => e);
+    delete process.env.BOT_GOOGLE_PASSWORD;
+    check('password challenge + BOT_GOOGLE_PASSWORD → signed in again, join proceeds', err === null, String(err));
+    check('…the password was typed once', page.typed.length === 1 && page.typed[0] === 'pw-for-test', `typed ${page.typed.length}x`);
+    check('…and the lobby CTA was clicked exactly once', page.clicks.length === 1, `clicks: ${page.clicks}`);
+  }
+
+  // 7. Password set, Google keeps the browser on its sign-in pages → not signed in.
+  {
+    const page = challengePage(null);
+    const ok = await answerGooglePasswordChallenge(page, 'pw-for-test', 50);
+    check('Google rejects / asks for more → reported as not signed in', ok === false);
+  }
+
+  // 8. A sign-in page with no password field (account chooser, e-mail step) is never answered.
+  {
+    const page = mockPage([], PWD_URL);
+    const ok = await answerGooglePasswordChallenge(page, 'pw-for-test', 50);
+    check('no password field → not answered', ok === false);
+  }
 
   console.log('\n=== isGoogleSignedOutLobby unit rows ===');
   check('structural name input alone → signed-out', await isGoogleSignedOutLobby(mockPage(PROBE_STRUCTURAL)));
