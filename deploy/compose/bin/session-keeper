@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# session-keeper — renew the authenticated bot's Google session outside meetings (host cron).
+#
+# Runs remote-browser's session-keeper-cli once in the bot image, under Xvfb, against the same
+# userdata the bots restore: a session found signed out, or at SESSION_MAX_AGE_DAYS (default 13),
+# is signed out and in again with the bot account's password, so a fixed 14-day web-session limit
+# never ends a session at a meeting's start. The result is POSTed (signed) to REPORT_URL, so a
+# sign-in that needs a person reaches one hours before the next meeting.
+#
+# Skips (exit 0, nothing reported) while a meeting bot runs: a bot writes its session back when it
+# ends, and must not overwrite the renewed one with the copy it started from.
+#
+#   crontab:  30 5,6 * * *  /opt/vexa/deploy/compose/bin/session-keeper >> /var/log/vexa-session-keeper.log 2>&1
+#
+# Config — $STATE_DIR/keeper.env (mode 600):
+#   BOT_GOOGLE_EMAIL=notetaker@example.com
+#   REPORT_URL=https://crm.example.com/api/webhooks/vexa-session     (optional)
+#   REPORT_SECRET=<HMAC secret the receiver verifies>                 (optional)
+# From meeting-api's environment: BOT_USERDATA_S3_PATH, BOT_S3_*, BOT_GOOGLE_PASSWORD, BROWSER_IMAGE.
+# State: $STATE_DIR/session.json (last sign-in time), $STATE_DIR/session-keeper-failed.png.
+set -euo pipefail
+STATE_DIR="${STATE_DIR:-/opt/vexa-session}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE/.."
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+[ -f "$STATE_DIR/keeper.env" ] || { echo "$(stamp) session-keeper: $STATE_DIR/keeper.env missing"; exit 1; }
+set -a; . "$STATE_DIR/keeper.env"; set +a
+
+if docker ps --format '{{.Names}}' | grep -q '^vexa-mtg-'; then
+  echo "$(stamp) session-keeper: a meeting bot is running; skipped"
+  exit 0
+fi
+
+API=$(docker compose ps -q meeting-api)
+[ -n "$API" ] || { echo "$(stamp) session-keeper: meeting-api is not running"; exit 1; }
+IMG=$(docker exec "$API" printenv BROWSER_IMAGE 2>/dev/null || true)
+[ -n "$IMG" ] || IMG=$(grep -E '^BROWSER_IMAGE=' .env | tail -1 | cut -d= -f2- | tr -d '"')
+NET=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$API" | awk '{print $1}')
+
+ENVF=$(mktemp); chmod 600 "$ENVF"
+trap 'rm -f "$ENVF"' EXIT
+docker exec "$API" printenv \
+  | grep -E '^(BOT_USERDATA_S3_PATH|BOT_S3_ENDPOINT|BOT_S3_BUCKET|BOT_S3_ACCESS_KEY|BOT_S3_SECRET_KEY|BOT_GOOGLE_PASSWORD)=' > "$ENVF" || true
+echo "BOT_GOOGLE_EMAIL=${BOT_GOOGLE_EMAIL:-}" >> "$ENVF"
+[ -n "${SESSION_MAX_AGE_DAYS:-}" ] && echo "SESSION_MAX_AGE_DAYS=$SESSION_MAX_AGE_DAYS" >> "$ENVF"
+
+echo "$(stamp) session-keeper: image=$IMG"
+set +e
+OUT=$(docker run --rm --name vexa-session-keeper --network "$NET" --env-file "$ENVF" \
+  -e DISPLAY=:99 -e SESSION_STATE_FILE=/state/session.json -v "$STATE_DIR:/state" \
+  --entrypoint bash "$IMG" -c \
+  'Xvfb :99 -screen 0 1600x1000x24 >/dev/null 2>&1 & sleep 1; cd /app/core/meetings/modules/remote-browser && node dist/session-keeper-cli.js' 2>&1)
+CODE=$?
+set -e
+echo "$OUT" | grep -E '^\[(session-keeper|s3-sync)\]' || echo "$OUT" | tail -20
+RESULT=$(echo "$OUT" | sed -n 's/^\[session-keeper\] RESULT //p' | tail -1)
+[ -n "$RESULT" ] || RESULT="{\"ok\":false,\"action\":\"error\",\"reason\":\"crashed\",\"detail\":\"no result (exit $CODE)\",\"lastLoginAt\":null}"
+
+if [ -n "${REPORT_URL:-}" ] && [ -n "${REPORT_SECRET:-}" ]; then
+  BODY="{\"type\":\"bot.session_check\",\"checkedAt\":\"$(stamp)\",\"result\":$RESULT}"
+  TS=$(date +%s)
+  SIG="sha256=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$REPORT_SECRET" | awk '{print $NF}')"
+  HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -m 30 -X POST "$REPORT_URL" \
+    -H 'Content-Type: application/json' -H "x-webhook-timestamp: $TS" -H "x-webhook-signature: $SIG" \
+    --data-binary "$BODY" || echo "000")
+  echo "$(stamp) session-keeper: reported to $REPORT_URL → HTTP $HTTP"
+fi
+exit "$CODE"
